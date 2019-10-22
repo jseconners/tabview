@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	_ "github.com/go-sql-driver/mysql"
 
+	"github.com/joho/sqltocsv"
 	"github.com/gorilla/mux"
 	"github.com/spf13/viper"
 )
@@ -29,14 +30,12 @@ type db struct {
 }
 
 type connectionPool struct {
-	DataSources []datasource
-	Labels map[string]bool
+	DataSources map[string]datasource
 }
 
 type datasource struct {
 	DB *sql.DB
-	Label string
-	Tables []string
+	Tables map[string]bool
 }
 
 var Conf config
@@ -63,70 +62,118 @@ func dbHandle(connString string) (*sql.DB) {
 	if err != nil {
 		panic(err.Error()) 
 	}
-	defer db.Close()
-
 	err = db.Ping()
 	if err != nil {
 		panic(err.Error())
 	}
-
 	return db
 }
 
 func processDataSources() {
 	conLen := len(Conf.Databases)
 
-	ConnPool.DataSources = make([]datasource, conLen)
-	ConnPool.Labels = make(map[string]bool, conLen)
+	ConnPool.DataSources = make(map[string]datasource, conLen)
 
-	for i, dbConf := range Conf.Databases {
-		ConnPool.DataSources[i].Label = dbConf.Label
-		ConnPool.Labels[dbConf.Label] = true
-
+	for _, dbConf := range Conf.Databases {
+		
+		// create database handle
 		connString := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", dbConf.User, dbConf.Pass, dbConf.Host, dbConf.Port, dbConf.Name)
-		ConnPool.DataSources[i].DB = dbHandle(connString)
+		db := dbHandle(connString)
+
+		// populate available tables for database
+		// just get them all for testing
+		tables := make(map[string]bool)
+		rows, err := db.Query("select table_name from information_schema.tables where table_type = 'BASE TABLE' and table_schema = database() order by table_name")
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer rows.Close()
+
+		var table string
+		for rows.Next() {
+			rows.Scan(&table)
+			tables[table] = true
+		}
+
+		// Add datasource to connection pool
+		ConnPool.DataSources[dbConf.Label] = datasource {
+			DB: db,
+			Tables: tables,
+		}
 	}
 }
 
 
 func dbList(w http.ResponseWriter, r *http.Request) {
-	// vars := mux.Vars(r)
-	
 	labels := []string{}
-	for label, _ := range ConnPool.Labels {
+	for label, _ := range ConnPool.DataSources {
     	labels = append(labels, label)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(labels)
+
 }
 
-/**
 func tableList(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Tables!")
+	vars := mux.Vars(r)
+	
+	cp, found := ConnPool.DataSources[vars["dbLabel"]]
+	if !found {
+		w.WriteHeader(404)
+		return
+	}
+
+	tables := []string{}
+	for tname, _ := range cp.Tables {
+		tables = append(tables, tname)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(tables)
+
 }
 
-func dataList(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Data!")
+func data(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	
+	cp, found := ConnPool.DataSources[vars["dbLabel"]]
+	if !found {
+		w.WriteHeader(404)
+		return
+	}
+
+	// Table must exist in the data source table list
+	// generated independently of user input. vars["tableName"] is 
+	// safe to use in query
+	_, found = cp.Tables[vars["tableName"]]
+	if !found {
+		w.WriteHeader(404)
+		return
+	}
+
+	rows, _ := cp.DB.Query(fmt.Sprintf("SELECT * FROM %s", vars["tableName"]))
+	defer rows.Close()
+
+	w.Header().Set("Content-type", "text/plain")
+    // w.Header().Set("Content-Disposition", "attachment; filename=\"report.csv\"")
+	sqltocsv.Write(w, rows)
 }
-**/
+
 
 func main() {
 
 	processConfig()
 	processDataSources()
 
-
-
 	// router
 	router := mux.NewRouter().StrictSlash(true)
 	
 	// routes
 	router.HandleFunc("/", dbList).Methods("GET")
-
+	router.HandleFunc("/{dbLabel}/", tableList).Methods("GET")
+	router.HandleFunc("/{dbLabel}/{tableName}/", data).Methods("GET")
 
 	// start server
 	log.Fatal(http.ListenAndServe(":8080", router))
-	/**
-	**/
 }
