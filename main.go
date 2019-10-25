@@ -35,7 +35,8 @@ type connectionPool struct {
 
 type datasource struct {
 	DB *sql.DB
-	Tables map[string]bool
+	TableMap map[string]bool
+	TableSlc []string
 }
 
 var Conf config
@@ -82,7 +83,8 @@ func processDataSources() {
 
 		// populate available tables for database
 		// just get them all for testing
-		tables := make(map[string]bool)
+		tableMap := make(map[string]bool)
+		tableSlc := make([]string, 0)
 		rows, err := db.Query("select table_name from information_schema.tables where table_type = 'BASE TABLE' and table_schema = database() order by table_name")
 		if err != nil {
 			log.Fatal(err)
@@ -92,13 +94,15 @@ func processDataSources() {
 		var table string
 		for rows.Next() {
 			rows.Scan(&table)
-			tables[table] = true
+			tableMap[table] = true
+			tableSlc = append(tableSlc, table)
 		}
 
 		// Add datasource to connection pool
 		ConnPool.DataSources[dbConf.Label] = datasource {
 			DB: db,
-			Tables: tables,
+			TableMap: tableMap,
+			TableSlc: tableSlc,
 		}
 	}
 }
@@ -123,15 +127,8 @@ func tableList(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(404)
 		return
 	}
-
-	tables := []string{}
-	for tname, _ := range cp.Tables {
-		tables = append(tables, tname)
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(tables)
-
+	json.NewEncoder(w).Encode(cp.TableSlc)
 }
 
 func data(w http.ResponseWriter, r *http.Request) {
@@ -146,7 +143,7 @@ func data(w http.ResponseWriter, r *http.Request) {
 	// Table must exist in the data source table list
 	// generated independently of user input. vars["tableName"] is 
 	// safe to use in query
-	_, found = cp.Tables[vars["tableName"]]
+	_, found = cp.TableMap[vars["tableName"]]
 	if !found {
 		w.WriteHeader(404)
 		return
