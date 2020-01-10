@@ -1,2 +1,2 @@
-# tdvr
-Table data viewer microservice and front end.
+# tdvr-go
+REST microservice for relational DB table data viewing 
